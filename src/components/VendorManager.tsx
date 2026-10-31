@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   Users,
   Mail,
@@ -17,78 +17,94 @@ import {
 } from 'lucide-react';
 import { VendorItem, EventPlan } from '@/types/event';
 
+/** Discount factor applied when computing a negotiation target (12% below the vendor's quote). */
+const NEGOTIATION_DISCOUNT_FACTOR = 0.88;
+
 interface VendorManagerProps {
   plan: EventPlan;
   onUpdatePlan: (updated: EventPlan) => void;
 }
+
+/** Default/blank state for the Add Vendor form. */
+const DEFAULT_FORM = {
+  name: '',
+  category: 'Photography',
+  contactPerson: '',
+  email: '',
+  phone: '',
+  quoteAmount: 2500,
+  notes: '',
+} as const;
+
+type VendorFormState = {
+  name: string;
+  category: string;
+  contactPerson: string;
+  email: string;
+  phone: string;
+  quoteAmount: number;
+  notes: string;
+};
 
 export const VendorManager: React.FC<VendorManagerProps> = ({ plan, onUpdatePlan }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [negotiationVendor, setNegotiationVendor] = useState<VendorItem | null>(null);
   const [copiedEmail, setCopiedEmail] = useState(false);
 
-  // Form State
-  const [name, setName] = useState('');
-  const [category, setCategory] = useState('Photography');
-  const [contactPerson, setContactPerson] = useState('');
-  const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
-  const [quoteAmount, setQuoteAmount] = useState(2500);
-  const [notes, setNotes] = useState('');
+  // Single state object for the add-vendor form fields
+  const [form, setForm] = useState<VendorFormState>({ ...DEFAULT_FORM });
 
-  const handleAddVendor = (e: React.FormEvent) => {
+  const setField = useCallback(<K extends keyof VendorFormState>(key: K, value: VendorFormState[K]) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const handleAddVendor = useCallback((e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!form.name.trim()) return;
 
     const newVendor: VendorItem = {
       id: `v-${Date.now()}`,
-      category,
-      name: name.trim(),
-      contactPerson: contactPerson.trim() || undefined,
-      email: email.trim() || undefined,
-      phone: phone.trim() || undefined,
+      category: form.category,
+      name: form.name.trim(),
+      contactPerson: form.contactPerson.trim() || undefined,
+      email: form.email.trim() || undefined,
+      phone: form.phone.trim() || undefined,
       status: 'researching',
-      quoteAmount: Number(quoteAmount) || 0,
-      notes: notes.trim() || undefined,
+      quoteAmount: Number(form.quoteAmount) || 0,
+      notes: form.notes.trim() || undefined,
       rating: 5,
     };
 
-    const updated = {
+    onUpdatePlan({
       ...plan,
       vendors: [...plan.vendors, newVendor],
       updatedAt: new Date().toISOString(),
-    };
-
-    onUpdatePlan(updated);
+    });
     setShowAddModal(false);
-    setName('');
-    setContactPerson('');
-    setEmail('');
-    setPhone('');
-    setQuoteAmount(2000);
-    setNotes('');
-  };
+    setForm({ ...DEFAULT_FORM });
+  }, [form, plan, onUpdatePlan]);
 
-  const handleStatusChange = (id: string, status: VendorItem['status']) => {
-    const updated = {
+  const handleStatusChange = useCallback((id: string, status: VendorItem['status']) => {
+    onUpdatePlan({
       ...plan,
       vendors: plan.vendors.map((v) => (v.id === id ? { ...v, status } : v)),
       updatedAt: new Date().toISOString(),
-    };
-    onUpdatePlan(updated);
-  };
+    });
+  }, [plan, onUpdatePlan]);
 
-  const handleDeleteVendor = (id: string) => {
-    const updated = {
+  const handleDeleteVendor = useCallback((id: string) => {
+    onUpdatePlan({
       ...plan,
       vendors: plan.vendors.filter((v) => v.id !== id),
       updatedAt: new Date().toISOString(),
-    };
-    onUpdatePlan(updated);
-  };
+    });
+  }, [plan, onUpdatePlan]);
 
-  // Generate polite AI negotiation inquiry
-  const generateNegotiationEmail = (v: VendorItem) => {
+  /**
+   * Generates a polite, professional negotiation email for the given vendor.
+   * The target budget is 88% of their quoted amount — a typical starting negotiation position.
+   */
+  const generateNegotiationEmail = useCallback((v: VendorItem) => {
     return `Subject: Inquiry & Partnership regarding ${plan.title} on ${plan.date}
 
 Dear ${v.contactPerson || v.name} Team,
@@ -97,22 +113,25 @@ I hope you are having a wonderful week! We are in the final stages of curating o
 
 We love your portfolio and exceptional reputation in ${v.category}. We reviewed your quote of ${plan.currency} ${v.quoteAmount.toLocaleString()}. 
 
-Our allocated target budget for this category is approximately ${plan.currency} ${Math.round(v.quoteAmount * 0.88).toLocaleString()}. If we are prepared to lock in a contract and deposit this week, would you have any flexibility to tailor your package or offer a package discount to align with our target?
+Our allocated target budget for this category is approximately ${plan.currency} ${Math.round(v.quoteAmount * NEGOTIATION_DISCOUNT_FACTOR).toLocaleString()}. If we are prepared to lock in a contract and deposit this week, would you have any flexibility to tailor your package or offer a package discount to align with our target?
 
 We would be absolutely thrilled to collaborate with you to make this celebration unforgettable!
 
 Warm regards,
 Event Coordination Team
 ${plan.title}`;
-  };
+  }, [plan.title, plan.date, plan.location, plan.guestCount, plan.currency]);
 
-  const copyToClipboard = (text: string) => {
+  const copyToClipboard = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedEmail(true);
     setTimeout(() => setCopiedEmail(false), 2000);
-  };
+  }, []);
 
-  const bookedCount = plan.vendors.filter((v) => v.status === 'booked' || v.status === 'completed').length;
+  const bookedCount = useMemo(
+    () => plan.vendors.filter((v) => v.status === 'booked' || v.status === 'completed').length,
+    [plan.vendors]
+  );
 
   return (
     <section aria-labelledby="vendor-heading" className="flex flex-col gap-6">
@@ -272,7 +291,10 @@ ${plan.title}`;
                 Polite, professional negotiation calibrated for vendor retention.
               </span>
               <button
-                onClick={() => copyToClipboard(generateNegotiationEmail(negotiationVendor))}
+                onClick={() => {
+                  const emailText = generateNegotiationEmail(negotiationVendor);
+                  copyToClipboard(emailText);
+                }}
                 className="btn btn-primary btn-sm"
               >
                 {copiedEmail ? <Check size={14} /> : <Copy size={14} />}
@@ -296,8 +318,8 @@ ${plan.title}`;
                 <input
                   id="vendor-name"
                   className="form-input"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  value={form.name}
+                  onChange={(e) => setField('name', e.target.value)}
                   placeholder="e.g. Lumina Film Studio, Bella Pastry"
                   required
                 />
@@ -309,8 +331,8 @@ ${plan.title}`;
                   <select
                     id="vendor-category"
                     className="form-select"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
+                    value={form.category}
+                    onChange={(e) => setField('category', e.target.value)}
                   >
                     <option value="Venue">Venue</option>
                     <option value="Catering">Catering / Bar</option>
@@ -329,8 +351,8 @@ ${plan.title}`;
                     id="vendor-quote"
                     type="number"
                     className="form-input"
-                    value={quoteAmount}
-                    onChange={(e) => setQuoteAmount(Number(e.target.value))}
+                    value={form.quoteAmount}
+                    onChange={(e) => setField('quoteAmount', Number(e.target.value))}
                     min="0"
                   />
                 </div>
@@ -341,8 +363,8 @@ ${plan.title}`;
                 <input
                   id="vendor-contact"
                   className="form-input"
-                  value={contactPerson}
-                  onChange={(e) => setContactPerson(e.target.value)}
+                  value={form.contactPerson}
+                  onChange={(e) => setField('contactPerson', e.target.value)}
                   placeholder="e.g. Amanda Smith"
                 />
               </div>
@@ -354,8 +376,8 @@ ${plan.title}`;
                     id="vendor-email"
                     type="email"
                     className="form-input"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    value={form.email}
+                    onChange={(e) => setField('email', e.target.value)}
                     placeholder="contact@studio.com"
                   />
                 </div>
@@ -364,8 +386,8 @@ ${plan.title}`;
                   <input
                     id="vendor-phone"
                     className="form-input"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    value={form.phone}
+                    onChange={(e) => setField('phone', e.target.value)}
                     placeholder="+1 (555) 000-0000"
                   />
                 </div>
@@ -376,8 +398,8 @@ ${plan.title}`;
                 <input
                   id="vendor-notes"
                   className="form-input"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
+                  value={form.notes}
+                  onChange={(e) => setField('notes', e.target.value)}
                   placeholder="e.g. Requires 50% deposit, brings own speakers"
                 />
               </div>

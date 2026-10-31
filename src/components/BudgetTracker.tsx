@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   DollarSign,
   TrendingUp,
@@ -26,85 +26,106 @@ export const BudgetTracker: React.FC<BudgetTrackerProps> = ({ plan, onUpdatePlan
   const [newSpent, setNewSpent] = useState(0);
   const [newNotes, setNewNotes] = useState('');
 
-  // Calculations
-  const totalAllocated = plan.budgetBreakdown.reduce((acc, item) => acc + item.allocated, 0);
-  const totalSpent = plan.budgetBreakdown.reduce((acc, item) => acc + item.spent, 0);
+  // Memoised calculations — recompute only when the breakdown or total budget changes
+  const totalAllocated = useMemo(
+    () => plan.budgetBreakdown.reduce((acc, item) => acc + item.allocated, 0),
+    [plan.budgetBreakdown]
+  );
+  const totalSpent = useMemo(
+    () => plan.budgetBreakdown.reduce((acc, item) => acc + item.spent, 0),
+    [plan.budgetBreakdown]
+  );
   const remainingBudget = plan.totalBudget - totalSpent;
-  const spentPercentage = Math.min(Math.round((totalSpent / plan.totalBudget) * 100), 100);
+  const spentPercentage = useMemo(
+    () => Math.min(Math.round((totalSpent / plan.totalBudget) * 100), 100),
+    [totalSpent, plan.totalBudget]
+  );
   const isOverBudget = totalSpent > plan.totalBudget;
 
-  const handleAddItem = (e: React.FormEvent) => {
+  const handleAddItem = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
+
+    const spentNum  = Number(newSpent)     || 0;
+    const allocNum  = Number(newAllocated) || 0;
+    const derivedStatus: BudgetItem['status'] =
+      spentNum >= allocNum && allocNum > 0 ? 'paid_in_full'
+        : spentNum > 0 ? 'deposit_paid'
+        : 'planned';
 
     const newItem: BudgetItem = {
       id: `custom-b-${Date.now()}`,
       category: newCategory,
       name: newName.trim(),
-      allocated: Number(newAllocated) || 0,
-      spent: Number(newSpent) || 0,
+      allocated: allocNum,
+      spent: spentNum,
       notes: newNotes.trim(),
-      status: Number(newSpent) >= Number(newAllocated) ? 'paid_in_full' : Number(newSpent) > 0 ? 'deposit_paid' : 'planned',
+      status: derivedStatus,
     };
 
-    const updated = {
+    onUpdatePlan({
       ...plan,
       budgetBreakdown: [...plan.budgetBreakdown, newItem],
       updatedAt: new Date().toISOString(),
-    };
-
-    onUpdatePlan(updated);
+    });
     setShowAddModal(false);
     setNewName('');
     setNewAllocated(500);
     setNewSpent(0);
     setNewNotes('');
-  };
+  }, [newName, newSpent, newAllocated, newCategory, newNotes, plan, onUpdatePlan]);
 
-  const handleDeleteItem = (id: string) => {
-    const updated = {
+  const handleDeleteItem = useCallback((id: string) => {
+    onUpdatePlan({
       ...plan,
       budgetBreakdown: plan.budgetBreakdown.filter((item) => item.id !== id),
       updatedAt: new Date().toISOString(),
-    };
-    onUpdatePlan(updated);
-  };
+    });
+  }, [plan, onUpdatePlan]);
 
-  const handleStatusChange = (id: string, status: BudgetItem['status']) => {
-    const updated = {
+  const handleStatusChange = useCallback((id: string, status: BudgetItem['status']) => {
+    onUpdatePlan({
       ...plan,
       budgetBreakdown: plan.budgetBreakdown.map((item) => {
-        if (item.id === id) {
-          const spent = status === 'paid_in_full' ? item.allocated : status === 'deposit_paid' ? Math.round(item.allocated * 0.5) : 0;
-          return { ...item, status, spent };
-        }
-        return item;
+        if (item.id !== id) return item;
+        const spent =
+          status === 'paid_in_full'  ? item.allocated
+          : status === 'deposit_paid' ? Math.round(item.allocated * 0.5)
+          : 0;
+        return { ...item, status, spent };
       }),
       updatedAt: new Date().toISOString(),
-    };
-    onUpdatePlan(updated);
-  };
+    });
+  }, [plan, onUpdatePlan]);
 
-  const exportCsv = () => {
+  /**
+   * Exports the budget breakdown to a CSV file using a Blob URL.
+   * This correctly handles special characters and large payloads,
+   * unlike the older `data:text/csv` + encodeURI approach.
+   */
+  const exportCsv = useCallback(() => {
     const headers = ['Category', 'Item Name', 'Allocated', 'Spent', 'Status', 'Notes'];
+    const escapeCsv = (s: string) => `"${s.replace(/"/g, '""')}"`;
     const rows = plan.budgetBreakdown.map((item) => [
-      `"${item.category}"`,
-      `"${item.name.replace(/"/g, '""')}"`,
+      escapeCsv(item.category),
+      escapeCsv(item.name),
       item.allocated,
       item.spent,
       item.status,
-      `"${(item.notes || '').replace(/"/g, '""')}"`
+      escapeCsv(item.notes ?? ''),
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.href = url;
     link.setAttribute('download', `${plan.title.replace(/\s+/g, '_')}_Budget.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
+    URL.revokeObjectURL(url);
+  }, [plan.budgetBreakdown, plan.title]);
 
   return (
     <section aria-labelledby="budget-heading" className="flex flex-col gap-6">

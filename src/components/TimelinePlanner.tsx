@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   Calendar,
   Clock,
@@ -29,7 +29,7 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({ plan, onUpdate
   const [newCategory, setNewCategory] = useState<TimelineMilestone['category']>('logistics');
   const [newIsCritical, setNewIsCritical] = useState(false);
 
-  const completedCount = plan.timeline.filter((t) => t.completed).length;
+  const completedCount = useMemo(() => plan.timeline.filter((t) => t.completed).length, [plan.timeline]);
   const totalCount = plan.timeline.length;
   const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
@@ -41,27 +41,25 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({ plan, onUpdate
     'Day-of Run of Show',
   ];
 
-  const handleToggleTask = (id: string) => {
-    const updated = {
+  const handleToggleTask = useCallback((id: string) => {
+    onUpdatePlan({
       ...plan,
       timeline: plan.timeline.map((item) =>
         item.id === id ? { ...item, completed: !item.completed } : item
       ),
       updatedAt: new Date().toISOString(),
-    };
-    onUpdatePlan(updated);
-  };
+    });
+  }, [plan, onUpdatePlan]);
 
-  const handleDeleteTask = (id: string) => {
-    const updated = {
+  const handleDeleteTask = useCallback((id: string) => {
+    onUpdatePlan({
       ...plan,
       timeline: plan.timeline.filter((item) => item.id !== id),
       updatedAt: new Date().toISOString(),
-    };
-    onUpdatePlan(updated);
-  };
+    });
+  }, [plan, onUpdatePlan]);
 
-  const handleAddTask = (e: React.FormEvent) => {
+  const handleAddTask = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (!newTaskName.trim()) return;
 
@@ -76,21 +74,19 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({ plan, onUpdate
       critical: newIsCritical,
     };
 
-    const updated = {
+    onUpdatePlan({
       ...plan,
       timeline: [...plan.timeline, newTask],
       updatedAt: new Date().toISOString(),
-    };
-
-    onUpdatePlan(updated);
+    });
     setShowAddModal(false);
     setNewTaskName('');
     setNewTime('');
     setNewIsCritical(false);
-  };
+  }, [newTaskName, newPhase, newTime, newDueDate, newCategory, newIsCritical, plan, onUpdatePlan]);
 
-  // Export as iCal format
-  const exportICal = () => {
+  /** Exports timeline milestones to an iCalendar (.ics) file. */
+  const exportICal = useCallback(() => {
     let icsContent = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
@@ -119,11 +115,14 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({ plan, onUpdate
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
+  }, [plan.timeline, plan.date, plan.title]);
 
-  const filteredTimeline = activePhaseFilter === 'all'
-    ? plan.timeline
-    : plan.timeline.filter((t) => t.phase === activePhaseFilter);
+  const filteredTimeline = useMemo(
+    () => activePhaseFilter === 'all'
+      ? plan.timeline
+      : plan.timeline.filter((t) => t.phase === activePhaseFilter),
+    [plan.timeline, activePhaseFilter]
+  );
 
   return (
     <section aria-labelledby="timeline-heading" className="flex flex-col gap-6">

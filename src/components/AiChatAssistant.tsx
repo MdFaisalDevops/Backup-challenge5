@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   MessageSquare,
   Sparkles,
@@ -19,31 +19,37 @@ interface AiChatAssistantProps {
   plan: EventPlan;
 }
 
+/** Duration in ms before the "Copied" indicator resets. */
+const COPY_RESET_DELAY = 1800;
+
+/** Builds the initial welcome message for the chat session. */
+function buildWelcomeMessage(plan: EventPlan): ChatMessage {
+  return {
+    id: 'welcome-1',
+    role: 'assistant',
+    content: `Hello! I'm your CelebrateAI Concierge. I have full context on **${plan.title}** (${plan.guestCount} guests, ${plan.totalBudget.toLocaleString()} ${plan.currency}). How can I help you optimize your celebration today?`,
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    suggestions: [
+      'How can I save 15% on catering?',
+      'Draft a vendor negotiation email',
+      'Suggest 3 unique guest icebreaker games',
+      'Review my day-of timeline flow',
+    ],
+  };
+}
+
 export const AiChatAssistant: React.FC<AiChatAssistantProps> = ({ plan }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome-1',
-      role: 'assistant',
-      content: `Hello! I'm your CelebrateAI Concierge. I have full context on **${plan.title}** (${plan.guestCount} guests, ${plan.totalBudget.toLocaleString()} ${plan.currency}). How can I help you optimize your celebration today?`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      suggestions: [
-        'How can I save 15% on catering?',
-        'Draft a vendor negotiation email',
-        'Suggest 3 unique guest icebreaker games',
-        'Review my day-of timeline flow',
-      ],
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([buildWelcomeMessage(plan)]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -51,7 +57,7 @@ export const AiChatAssistant: React.FC<AiChatAssistantProps> = ({ plan }) => {
     }
   }, [messages, isOpen]);
 
-  const handleSendMessage = async (textToSend?: string) => {
+  const handleSendMessage = useCallback(async (textToSend?: string) => {
     const query = (textToSend || input).trim();
     if (!query || loading) return;
 
@@ -105,15 +111,15 @@ export const AiChatAssistant: React.FC<AiChatAssistantProps> = ({ plan }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, loading, plan, messages]);
 
-  const copyMessage = (id: string, text: string) => {
+  const copyMessage = useCallback((id: string, text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 1800);
-  };
+    setTimeout(() => setCopiedId(null), COPY_RESET_DELAY);
+  }, []);
 
-  const resetChat = () => {
+  const resetChat = useCallback(() => {
     setMessages([
       {
         id: `welcome-${Date.now()}`,
@@ -127,7 +133,7 @@ export const AiChatAssistant: React.FC<AiChatAssistantProps> = ({ plan }) => {
         ],
       },
     ]);
-  };
+  }, [plan.title]);
 
   return (
     <div className="chat-drawer no-print" role="region" aria-label="AI Assistant Chat">

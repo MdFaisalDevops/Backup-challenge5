@@ -2,8 +2,17 @@ import { EventPlan, WizardAnswers, ChatMessage, BudgetItem, TimelineMilestone, V
 import { safeExtractJson, hasPromptInjection } from './security';
 import { ALL_SAMPLE_EVENTS } from './sampleEvents';
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const DEFAULT_BUDGET = 15000;
+const DEFAULT_GUEST_COUNT = 50;
+const DEFAULT_DATE = '2026-10-24';
+
+
+// ─── System Prompt ───────────────────────────────────────────────────────────
+
 /**
- * System prompt strictly bound to event planning domain with guardrails against jailbreaks
+ * System prompt strictly bound to event planning domain with guardrails against jailbreaks.
  */
 const SYSTEM_INSTRUCTION = `
 You are CelebrateAI, an expert AI Event Planning Architect specializing in Weddings, Birthdays, and Community Events.
@@ -16,50 +25,90 @@ CRITICAL RULES & GUARDRAILS:
 4. Ensure accessibility, dietary, and contingency buffers are thoughtfully factored in.
 `.trim();
 
+// ─── Budget Ratio Helpers ─────────────────────────────────────────────────────────
+
+type BudgetRatio = { category: string; name: string; pct: number; notes: string };
+
 /**
- * Builds deterministic, dynamic bespoke event plan if API key is not supplied or fails.
- * Guarantees zero downtime and instant rich responses for virtual judging and Vercel visitors!
+ * Returns wedding budget category ratios.
+ * @param location - Event location for naming the venue line item.
+ * @param guests   - Guest count, used in catering description.
+ * @param budget   - Total budget, used to compute per-guest cost.
+ * @param currency - Currency code for the per-guest label.
+ * @param theme    - Theme name used in floral/decor line item.
+ */
+function getWeddingBudgetRatios(location: string, guests: number, budget: number, currency: string, theme: string): BudgetRatio[] {
+  return [
+    { category: 'Venue', name: `${location} Rental & Suites`, pct: 0.28, notes: 'Includes ceremony & reception setup.' },
+    { category: 'Catering & Bar', name: `Gourmet Dinner & Bar for ${guests} Guests`, pct: 0.35, notes: `Estimated at ${(budget * 0.35 / guests).toFixed(0)} ${currency}/guest.` },
+    { category: 'Photography & Film', name: 'Lead Photographer & Drone Coverage', pct: 0.12, notes: 'Includes digital gallery and print rights.' },
+    { category: 'Decor & Floral', name: `${theme} Centerpieces & Arch`, pct: 0.10, notes: 'Repurposing ceremony florals for sweetheart table.' },
+    { category: 'Music & Entertainment', name: 'Live Band / DJ Sound System & Lighting', pct: 0.08, notes: 'Includes wireless mics for speeches.' },
+    { category: 'Stationery & Favors', name: 'Printed Invitations & Personalized Favors', pct: 0.03, notes: 'Custom themed keepsakes.' },
+    { category: 'Contingency Reserve', name: 'Unforeseen Buffer Fund (5%)', pct: 0.04, notes: 'Emergency weather & last-minute gratuities.' },
+  ];
+}
+
+/**
+ * Returns birthday budget category ratios.
+ * @param location - Party venue name.
+ * @param guests   - Guest count, used in food/drink description.
+ * @param theme    - Theme name used in the decor line item.
+ */
+function getBirthdayBudgetRatios(location: string, guests: number, theme: string): BudgetRatio[] {
+  return [
+    { category: 'Venue', name: `${location} Rental`, pct: 0.30, notes: 'Includes private room & basic furniture.' },
+    { category: 'Food & Drinks', name: `Craft Cocktails & Passed Hors d'oeuvres for ${guests}`, pct: 0.38, notes: 'Appetizers & celebratory drinks.' },
+    { category: 'Entertainment & DJ', name: 'DJ, Audio Equipment & Interactive Games', pct: 0.14, notes: 'Curated high-energy playlist & lighting.' },
+    { category: 'Decor & Theme', name: `${theme} Custom Banner, Lighting & Balloons`, pct: 0.08, notes: 'Instagram-worthy photo backdrop.' },
+    { category: 'Cake & Treats', name: 'Artisan Custom Celebration Cake & Dessert Bar', pct: 0.05, notes: 'Multi-flavor bespoke design.' },
+    { category: 'Contingency', name: 'Incidentals & Gratuities', pct: 0.05, notes: 'Staff tips and extra supplies.' },
+  ];
+}
+
+/**
+ * Returns community event budget category ratios.
+ * @param guests - Attendee count for the refreshments line item.
+ */
+function getCommunityBudgetRatios(guests: number): BudgetRatio[] {
+  return [
+    { category: 'Permits & Insurance', name: 'City Park Permit, Health Permits & Liability Insurance', pct: 0.15, notes: 'Municipal compliance required.' },
+    { category: 'Infrastructure & Rentals', name: 'Shade Tents, Tables, Benches & ADA Portable Restrooms', pct: 0.30, notes: 'Full site accessibility setup.' },
+    { category: 'Sound & Stage', name: 'Stage Rental, PA Sound System & Tech Operator', pct: 0.18, notes: 'Supports community speeches & performers.' },
+    { category: 'Food & Hospitality', name: `Community Refreshments & Volunteer Snacks for ${guests}`, pct: 0.18, notes: 'Hydration and local vendor vouchers.' },
+    { category: 'Signage & Marketing', name: 'Bilingual Banners, Flyers, Safety Cones & Shirts', pct: 0.10, notes: 'Community outreach and visibility.' },
+    { category: 'Contingency', name: 'Weather Tarps & Safety Reserve', pct: 0.09, notes: 'First aid and emergency supplies.' },
+  ];
+}
+
+/**
+ * Builds a deterministic, rich event plan from wizard answers without calling any external API.
+ * Used as the primary fallback when no Gemini API key is provided, ensuring zero-downtime.
+ *
+ * @param answers - The structured answers collected from the AI wizard questionnaire.
+ * @returns A fully-populated {@link EventPlan} with budget, timeline, vendors and ideas.
  */
 export function generateLocalBespokePlan(answers: WizardAnswers): EventPlan {
-  const base = ALL_SAMPLE_EVENTS[answers.eventType] || ALL_SAMPLE_EVENTS.wedding;
-  const budget = answers.totalBudget > 0 ? answers.totalBudget : 15000;
-  const guests = answers.guestCount > 0 ? answers.guestCount : 50;
+  const base = ALL_SAMPLE_EVENTS[answers.eventType] ?? ALL_SAMPLE_EVENTS.wedding;
+  const budget = answers.totalBudget > 0 ? answers.totalBudget : DEFAULT_BUDGET;
+  const guests = answers.guestCount > 0 ? answers.guestCount : DEFAULT_GUEST_COUNT;
   const currency = answers.currency || 'USD';
-  const targetDate = answers.targetDate || '2026-10-24';
-  const theme = answers.themeVibe || (answers.eventType === 'wedding' ? 'Modern Romantic Garden' : answers.eventType === 'birthday' ? 'Golden Glow Celebration' : 'Unity Harvest Fair');
+  const targetDate = answers.targetDate || DEFAULT_DATE;
+  const theme = answers.themeVibe || (
+    answers.eventType === 'wedding'   ? 'Modern Romantic Garden' :
+    answers.eventType === 'birthday'  ? 'Golden Glow Celebration' :
+    'Unity Harvest Fair'
+  );
+  const venueOrDefault = answers.location || 'Scenic Venue';
 
-  // Budget category ratio allocation depending on event type
-  let ratios: { category: string; name: string; pct: number; notes: string }[] = [];
-
+  // Select budget ratios based on event type
+  let ratios: BudgetRatio[];
   if (answers.eventType === 'wedding') {
-    ratios = [
-      { category: 'Venue', name: `${answers.location || 'Scenic Venue'} Rental & Suites`, pct: 0.28, notes: 'Includes ceremony & reception setup.' },
-      { category: 'Catering & Bar', name: `Gourmet Dinner & Bar for ${guests} Guests`, pct: 0.35, notes: `Estimated at ${(budget * 0.35 / guests).toFixed(0)} ${currency}/guest.` },
-      { category: 'Photography & Film', name: 'Lead Photographer & Drone Coverage', pct: 0.12, notes: 'Includes digital gallery and print rights.' },
-      { category: 'Decor & Floral', name: `${theme} Centerpieces & Arch`, pct: 0.10, notes: 'Repurposing ceremony florals for sweetheart table.' },
-      { category: 'Music & Entertainment', name: 'Live Band / DJ Sound System & Lighting', pct: 0.08, notes: 'Includes wireless mics for speeches.' },
-      { category: 'Stationery & Favors', name: 'Printed Invitations & Personalized Favors', pct: 0.03, notes: 'Custom themed keepsakes.' },
-      { category: 'Contingency Reserve', name: 'Unforeseen Buffer Fund (5%)', pct: 0.04, notes: 'Emergency weather & last-minute gratuities.' },
-    ];
+    ratios = getWeddingBudgetRatios(venueOrDefault, guests, budget, currency, theme);
   } else if (answers.eventType === 'birthday') {
-    ratios = [
-      { category: 'Venue', name: `${answers.location || 'Party Lounge'} Rental`, pct: 0.30, notes: 'Includes private room & basic furniture.' },
-      { category: 'Food & Drinks', name: `Craft Cocktails & Passed Hors d'oeuvres for ${guests}`, pct: 0.38, notes: `Appetizers & celebratory drinks.` },
-      { category: 'Entertainment & DJ', name: 'DJ, Audio Equipment & Interactive Games', pct: 0.14, notes: 'Curated high-energy playlist & lighting.' },
-      { category: 'Decor & Theme', name: `${theme} Custom Banner, Lighting & Balloons`, pct: 0.08, notes: 'Instagram-worthy photo backdrop.' },
-      { category: 'Cake & Treats', name: 'Artisan Custom Celebration Cake & Dessert Bar', pct: 0.05, notes: 'Multi-flavor bespoke design.' },
-      { category: 'Contingency', name: 'Incidentals & Gratuities', pct: 0.05, notes: 'Staff tips and extra supplies.' },
-    ];
+    ratios = getBirthdayBudgetRatios(answers.location || 'Party Lounge', guests, theme);
   } else {
-    // Community event
-    ratios = [
-      { category: 'Permits & Insurance', name: 'City Park Permit, Health Permits & Liability Insurance', pct: 0.15, notes: 'Municipal compliance required.' },
-      { category: 'Infrastructure & Rentals', name: 'Shade Tents, Tables, Benches & ADA Portable Restrooms', pct: 0.30, notes: 'Full site accessibility setup.' },
-      { category: 'Sound & Stage', name: 'Stage Rental, PA Sound System & Tech Operator', pct: 0.18, notes: 'Supports community speeches & performers.' },
-      { category: 'Food & Hospitality', name: `Community Refreshments & Volunteer Snacks for ${guests}`, pct: 0.18, notes: 'Hydration and local vendor vouchers.' },
-      { category: 'Signage & Marketing', name: 'Bilingual Banners, Flyers, Safety Cones & Shirts', pct: 0.10, notes: 'Community outreach and visibility.' },
-      { category: 'Contingency', name: 'Weather Tarps & Safety Reserve', pct: 0.09, notes: 'First aid and emergency supplies.' },
-    ];
+    ratios = getCommunityBudgetRatios(guests);
   }
 
   const budgetBreakdown: BudgetItem[] = ratios.map((item, idx) => {
@@ -135,14 +184,19 @@ export function generateLocalBespokePlan(answers: WizardAnswers): EventPlan {
       ],
       aiPromptForInvitations: `Modern minimalist ${theme} celebration invitation, luxury textured paper, elegant typography, warm atmospheric lighting, photorealistic 8k`
     },
-    specialRequirements: answers.specialNotes || 'None specified.',
+    specialRequirements: answers.specialNotes ?? 'None specified.',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 }
 
 /**
- * Generate Event Plan via Gemini API or resilient fallback
+ * Generates a complete event plan via the Gemini API, with a resilient
+ * fallback to {@link generateLocalBespokePlan} on any failure or missing key.
+ *
+ * @param answers - The wizard questionnaire answers to base the plan on.
+ * @returns A fully-populated {@link EventPlan}.
+ * @throws {Error} If the input contains prompt injection patterns.
  */
 export async function generateEventPlan(answers: WizardAnswers): Promise<EventPlan> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -246,7 +300,13 @@ Return ONLY a JSON object with this exact structure:
 }
 
 /**
- * Handle AI Assistant Interactive Consultation / Chat messages
+ * Handles an interactive AI chat consultation message.
+ * When no Gemini API key is configured, falls back to keyword-driven local responses.
+ *
+ * @param message   - The user's message text (will be injection-checked).
+ * @param eventPlan - Optional active event plan for context-aware replies.
+ * @param history   - Prior conversation messages (up to last 4 are sent to the API).
+ * @returns An object containing the AI reply text and 2-4 follow-up suggestions.
  */
 export async function getAiChatResponse(
   message: string,
